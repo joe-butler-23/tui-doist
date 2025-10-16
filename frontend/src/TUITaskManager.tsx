@@ -151,16 +151,62 @@ const OutlinerView: React.FC<{
     })
   );
 
-  const tasksByProject = useMemo(() => {
-    const grouped = new Map<string, Task[]>();
-    for (const task of tasks) {
-      const existing = grouped.get(task.projectId);
-      if (existing) {
-        existing.push(task);
-      } else {
-        grouped.set(task.projectId, [task]);
+  // Handle drag end
+  const createProjectDragEndHandler = (projectId: string) => (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (over && active.id !== over.id) {
+      const oldIndex = filteredTasks.findIndex((task) => task.id === active.id);
+      const newIndex = filteredTasks.findIndex((task) => task.id === over.id);
+
+      if (oldIndex !== -1 && newIndex !== -1) {
+        // Update local state immediately for smooth UX
+        const reorderedTasks = arrayMove(filteredTasks, oldIndex, newIndex);
+        const reorderedTaskMap = new Map(reorderedTasks.map(task => [task.id, task]));
+
+        // Update the global tasks array
+        const newTasks = tasks.map((task) => {
+          if (task.projectId !== selectedProject?.id) {
+            return task;
+          }
+
+          return reorderedTaskMap.get(task.id) ?? task;
+        });
+        setTasks(newTasks);
       }
     }
+
+    setTasks(prevTasks => {
+      const projectTaskList = prevTasks.filter(task => task.projectId === projectId);
+      const oldIndex = projectTaskList.findIndex(task => task.id === active.id);
+      const newIndex = projectTaskList.findIndex(task => task.id === over.id);
+
+      if (oldIndex === -1 || newIndex === -1) {
+        return prevTasks;
+      }
+
+      const reorderedTasks = arrayMove(projectTaskList, oldIndex, newIndex);
+
+      if (selectedProject?.id === projectId && selectedTask) {
+        const newSelectedIndex = reorderedTasks.findIndex(task => task.id === selectedTask.id);
+        if (newSelectedIndex !== -1) {
+          setSelectedTaskIdx(newSelectedIndex);
+        }
+      }
+
+      const updatedTasks: Task[] = [];
+      let reorderedIndex = 0;
+      for (const task of prevTasks) {
+        if (task.projectId === projectId) {
+          updatedTasks.push(reorderedTasks[reorderedIndex++]);
+        } else {
+          updatedTasks.push(task);
+        }
+      }
+
+      return updatedTasks;
+    });
+  };
 
     return grouped;
   }, [tasks]);
@@ -172,59 +218,6 @@ const OutlinerView: React.FC<{
     }
     return lookup;
   }, [tasks]);
-
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-
-      if (!over || active.id === over.id) {
-        return;
-      }
-
-      const activeProjectId = taskProjectLookup.get(String(active.id));
-      const overProjectId = taskProjectLookup.get(String(over.id));
-
-      if (!activeProjectId || !overProjectId || activeProjectId !== overProjectId) {
-        return;
-      }
-
-      let nextSelectedIndex: number | null = null;
-
-      setTasks(prevTasks => {
-        const projectTaskList = prevTasks.filter(task => task.projectId === activeProjectId);
-        const oldIndex = projectTaskList.findIndex(task => task.id === active.id);
-        const newIndex = projectTaskList.findIndex(task => task.id === over.id);
-
-        if (oldIndex === -1 || newIndex === -1) {
-          return prevTasks;
-        }
-
-        const reorderedTasks = arrayMove(projectTaskList, oldIndex, newIndex);
-
-        if (selectedProject?.id === activeProjectId && selectedTask) {
-          const recalculatedIndex = reorderedTasks.findIndex(task => task.id === selectedTask.id);
-          if (recalculatedIndex !== -1) {
-            nextSelectedIndex = recalculatedIndex;
-          }
-        }
-
-        const reorderedQueue = [...reorderedTasks];
-        return prevTasks.map(task => {
-          if (task.projectId !== activeProjectId) {
-            return task;
-          }
-
-          const nextTask = reorderedQueue.shift();
-          return nextTask ?? task;
-        });
-      });
-
-      if (nextSelectedIndex !== null) {
-        setSelectedTaskIdx(nextSelectedIndex);
-      }
-    },
-    [selectedProject?.id, selectedTask, setTasks, setSelectedTaskIdx, taskProjectLookup]
-  );
 
   // Get filtered tasks for current project
   // Simple date hierarchy for demo (in real implementation, fetch from API)
@@ -369,19 +362,14 @@ const OutlinerView: React.FC<{
         </div>
         <div className="flex-1 overflow-y-auto min-h-0">
           {/* Projects as top-level nodes */}
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            {projects.map((project, projectIdx) => {
-              const projectId = `project-${project.id}`;
-              const isProjectCollapsed = isCollapsed(projectId);
-              const projectTaskList = tasksByProject.get(project.id) || [];
-              const hasChildren = projectTaskList.length > 0;
+          {projects.map((project, projectIdx) => {
+            const projectId = `project-${project.id}`;
+            const isProjectCollapsed = isCollapsed(projectId);
+            const projectTaskList = projectTasks[project.id] || [];
+            const hasChildren = projectTaskList.length > 0;
 
-              return (
-                <div key={project.id} className="mb-1">
+            return (
+              <div key={project.id} className="mb-1">
                 {/* Project Node - Pure outliner design */}
                 <div
                   className={`px-3 py-1.5 cursor-pointer flex items-center gap-2 relative group ${
@@ -415,30 +403,36 @@ const OutlinerView: React.FC<{
 
                 {/* Tasks under project - Drag and Drop enabled */}
                 {!isProjectCollapsed && projectTaskList.length > 0 && (
-                  <SortableContext
-                    items={projectTaskList.map(task => task.id)}
-                    strategy={verticalListSortingStrategy}
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={createProjectDragEndHandler(project.id)}
                   >
-                    {projectTaskList.map((task) => {
-                      const taskId = `task-${task.id}`;
-                      const isTaskCollapsed = isCollapsed(taskId);
-                      const hasNotes = task.notes && task.notes.trim().length > 0;
+                    <SortableContext
+                      items={projectTaskList.map(task => task.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {projectTaskList.map((task) => {
+                        const taskId = `task-${task.id}`;
+                        const isTaskCollapsed = isCollapsed(taskId);
+                        const hasNotes = task.notes && task.notes.trim().length > 0;
 
-                      return (
-                        <DraggableTask
-                          key={task.id}
-                          task={task}
-                          isSelected={selectedProject?.id === project.id && task.id === selectedTask?.id}
-                          onSelect={() => handleTaskSelect(projectIdx, projectTaskList, task.id)}
-                          hasNotes={!!hasNotes}
-                          isCollapsed={isTaskCollapsed}
-                          onToggleCollapse={() => toggleNodeCollapse(taskId)}
-                          completed={task.completed}
-                          text={task.text}
-                        />
-                      );
-                    })}
-                  </SortableContext>
+                        return (
+                          <DraggableTask
+                            key={task.id}
+                            task={task}
+                            isSelected={selectedProject?.id === project.id && task.id === selectedTask?.id}
+                            onSelect={() => handleTaskSelect(projectIdx, projectTaskList, task.id)}
+                            hasNotes={!!hasNotes}
+                            isCollapsed={isTaskCollapsed}
+                            onToggleCollapse={() => toggleNodeCollapse(taskId)}
+                            completed={task.completed}
+                            text={task.text}
+                          />
+                        );
+                      })}
+                    </SortableContext>
+                  </DndContext>
                 )}
 
                 {/* Add task input for project - Clean simple design */}
