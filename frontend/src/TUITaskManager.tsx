@@ -19,6 +19,8 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
+type SyncDirection = 'TO_TODOIST' | 'FROM_TODOIST' | 'BIDIRECTIONAL';
+
 interface Project {
   id: string;
   name: string;
@@ -93,6 +95,7 @@ const OutlinerView: React.FC<{
   setTasks: (tasks: Task[]) => void;
   selectedProject: Project | undefined;
   selectedProjectIdx: number;
+  selectedTaskIdx: number;
   setSelectedProjectIdx: (idx: number) => void;
   setSelectedTaskIdx: (idx: number) => void;
   activePane: string;
@@ -117,6 +120,7 @@ const OutlinerView: React.FC<{
   setTasks,
   selectedProject,
   selectedProjectIdx,
+  selectedTaskIdx,
   setSelectedProjectIdx,
   setSelectedTaskIdx,
   activePane,
@@ -138,7 +142,6 @@ const OutlinerView: React.FC<{
 }) => {
   // State for collapsible nodes
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
-  const [outlinerSelection, setOutlinerSelection] = useState<{type: 'project' | 'task', index: number} | null>(null);
 
   // Drag and drop sensors
   const sensors = useSensors(
@@ -149,21 +152,33 @@ const OutlinerView: React.FC<{
   );
 
   // Handle drag end
-  const handleDragEnd = (event: DragEndEvent) => {
+  const createProjectDragEndHandler = (projectId: string, projectTaskList: Task[]) => (event: DragEndEvent) => {
     const { active, over } = event;
 
-    if (over && active.id !== over.id) {
-      const oldIndex = filteredTasks.findIndex((task) => task.id === active.id);
-      const newIndex = filteredTasks.findIndex((task) => task.id === over.id);
+    if (!over || active.id === over.id) {
+      return;
+    }
 
-      if (oldIndex !== -1 && newIndex !== -1) {
-        // Update local state immediately for smooth UX
-        const reorderedTasks = arrayMove(filteredTasks, oldIndex, newIndex);
-        // Update the global tasks array
-        const newTasks = [...tasks];
-        const projectTasks = newTasks.filter(t => t.projectId === selectedProject?.id);
-        projectTasks.splice(0, projectTasks.length, ...reorderedTasks);
-        setTasks(newTasks);
+    const oldIndex = projectTaskList.findIndex(task => task.id === active.id);
+    const newIndex = projectTaskList.findIndex(task => task.id === over.id);
+
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+
+    const reorderedTasks = arrayMove(projectTaskList, oldIndex, newIndex);
+    const reorderedTaskMap = new Map(reorderedTasks.map(task => [task.id, task]));
+
+    const updatedTasks = tasks.map(task =>
+      task.projectId === projectId ? (reorderedTaskMap.get(task.id) ?? task) : task
+    );
+
+    setTasks(updatedTasks);
+
+    if (selectedProject?.id === projectId && selectedTask) {
+      const newSelectedIndex = reorderedTasks.findIndex(task => task.id === selectedTask.id);
+      if (newSelectedIndex !== -1) {
+        setSelectedTaskIdx(newSelectedIndex);
       }
     }
   };
@@ -178,8 +193,6 @@ const OutlinerView: React.FC<{
   }, {} as Record<string, Task[]>);
 
   // Get filtered tasks for current project
-  const filteredTasks = selectedProject ? projectTasks[selectedProject.id] || [] : [];
-
   // Simple date hierarchy for demo (in real implementation, fetch from API)
   const currentYear = new Date().getFullYear();
   const currentWeek = Math.ceil((new Date().getDate() - new Date(currentYear, 0, 1).getDate() + 1) / 7);
@@ -197,27 +210,29 @@ const OutlinerView: React.FC<{
     });
   }, []);
 
-  // Debug function to check collapse state
-  const debugCollapseState = useCallback(() => {
-    console.log('Current collapsed nodes:', Array.from(collapsedNodes));
-  }, [collapsedNodes]);
+  const handleProjectSelect = (projectIdx: number, projectTaskList: Task[]) => {
+    setSelectedProjectIdx(projectIdx);
 
-  // Handle node selection - this needs to update the actual selection state
-  const handleNodeSelect = (type: 'project' | 'task', index: number) => {
-    if (type === 'project') {
-      setSelectedProjectIdx(index);
-      setOutlinerSelection({type, index});
-    } else if (type === 'task') {
-      // Find the actual task at this index within the current project
-      const currentProjectTasks = projectTasks[projects[selectedProjectIdx]?.id] || [];
-      if (index < currentProjectTasks.length) {
-        const actualTask = currentProjectTasks[index];
-        const taskGlobalIndex = tasks.findIndex(t => t.id === actualTask.id);
-        if (taskGlobalIndex !== -1) {
-          setSelectedTaskIdx(taskGlobalIndex);
-        }
-      }
-      setOutlinerSelection({type, index});
+    if (projectIdx !== selectedProjectIdx) {
+      setSelectedTaskIdx(0);
+    } else if (projectTaskList.length > 0 && selectedTaskIdx >= projectTaskList.length) {
+      setSelectedTaskIdx(projectTaskList.length - 1);
+    } else if (projectTaskList.length === 0) {
+      setSelectedTaskIdx(0);
+    }
+
+    setActivePane('tasks');
+  };
+
+  const handleTaskSelect = (projectIdx: number, projectTaskList: Task[], taskId: string) => {
+    if (projectIdx !== selectedProjectIdx) {
+      setSelectedProjectIdx(projectIdx);
+    }
+
+    const taskIndex = projectTaskList.findIndex(task => task.id === taskId);
+    if (taskIndex !== -1) {
+      setSelectedTaskIdx(taskIndex);
+      setActivePane('tasks');
     }
   };
 
@@ -227,7 +242,6 @@ const OutlinerView: React.FC<{
   // Draggable Task Component
   const DraggableTask: React.FC<{
     task: Task;
-    taskIdx: number;
     isSelected: boolean;
     onSelect: () => void;
     hasNotes: boolean;
@@ -235,7 +249,7 @@ const OutlinerView: React.FC<{
     onToggleCollapse: () => void;
     completed: boolean;
     text: string;
-  }> = ({ task, taskIdx, isSelected, onSelect, hasNotes, isCollapsed, onToggleCollapse, completed, text }) => {
+  }> = ({ task, isSelected, onSelect, hasNotes, isCollapsed, onToggleCollapse, completed, text }) => {
     const {
       attributes,
       listeners,
@@ -288,7 +302,6 @@ const OutlinerView: React.FC<{
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log('Toggling collapse for task:', task.id, 'isCollapsed:', isCollapsed); // Debug
                 onToggleCollapse();
               }}
               onMouseDown={(e) => {
@@ -325,7 +338,8 @@ const OutlinerView: React.FC<{
           {projects.map((project, projectIdx) => {
             const projectId = `project-${project.id}`;
             const isProjectCollapsed = isCollapsed(projectId);
-            const hasChildren = (projectTasks[project.id]?.length || 0) > 0;
+            const projectTaskList = projectTasks[project.id] || [];
+            const hasChildren = projectTaskList.length > 0;
 
             return (
               <div key={project.id} className="mb-1">
@@ -334,7 +348,7 @@ const OutlinerView: React.FC<{
                   className={`px-3 py-1.5 cursor-pointer flex items-center gap-2 relative group ${
                     projectIdx === selectedProjectIdx ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800/50'
                   }`}
-                  onClick={() => handleNodeSelect('project', projectIdx)}
+                  onClick={() => handleProjectSelect(projectIdx, projectTaskList)}
                 >
                   {/* Simple bullet - Tana style */}
                   <span className="text-gray-400 text-sm">•</span>
@@ -348,7 +362,6 @@ const OutlinerView: React.FC<{
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        console.log('Toggling project collapse for:', projectId); // Debug
                         toggleNodeCollapse(projectId);
                       }}
                       onMouseDown={(e) => {
@@ -362,17 +375,17 @@ const OutlinerView: React.FC<{
                 </div>
 
                 {/* Tasks under project - Drag and Drop enabled */}
-                {!isProjectCollapsed && filteredTasks.length > 0 && (
+                {!isProjectCollapsed && projectTaskList.length > 0 && (
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
+                    onDragEnd={createProjectDragEndHandler(project.id, projectTaskList)}
                   >
                     <SortableContext
-                      items={filteredTasks.map(task => task.id)}
+                      items={projectTaskList.map(task => task.id)}
                       strategy={verticalListSortingStrategy}
                     >
-                      {filteredTasks.map((task, taskIdx) => {
+                      {projectTaskList.map((task) => {
                         const taskId = `task-${task.id}`;
                         const isTaskCollapsed = isCollapsed(taskId);
                         const hasNotes = task.notes && task.notes.trim().length > 0;
@@ -381,9 +394,8 @@ const OutlinerView: React.FC<{
                           <DraggableTask
                             key={task.id}
                             task={task}
-                            taskIdx={taskIdx}
-                            isSelected={task.id === selectedTask?.id}
-                            onSelect={() => handleNodeSelect('task', taskIdx)}
+                            isSelected={selectedProject?.id === project.id && task.id === selectedTask?.id}
+                            onSelect={() => handleTaskSelect(projectIdx, projectTaskList, task.id)}
                             hasNotes={!!hasNotes}
                             isCollapsed={isTaskCollapsed}
                             onToggleCollapse={() => toggleNodeCollapse(taskId)}
@@ -528,7 +540,7 @@ const TUITaskManager = () => {
   const [todoistToken, setTodoistToken] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
-  const [syncDirection, setSyncDirection] = useState('FROM_TODOIST');
+  const [syncDirection, setSyncDirection] = useState<SyncDirection>('FROM_TODOIST');
   const [realTimeSync, setRealTimeSync] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [viewMode, setViewMode] = useState<'classic' | 'outliner'>('classic');
@@ -745,19 +757,29 @@ const TUITaskManager = () => {
   };
 
   // Format inline text (**bold**, *italics*)
+  const escapeHtml = (unsafeText: string) =>
+    unsafeText
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   const formatInlineText = (text: string) => {
     if (!text) return text;
 
+    let safeText = escapeHtml(text);
+
     // Handle **bold**
-    text = text.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-gray-200">$1</strong>');
+    safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-gray-200">$1</strong>');
 
     // Handle *italics*
-    text = text.replace(/\*(.*?)\*/g, '<em class="italic text-gray-300">$1</em>');
+    safeText = safeText.replace(/\*(.*?)\*/g, '<em class="italic text-gray-300">$1</em>');
 
     // Handle URLs
-    text = text.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" class="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer">$1</a>');
+    safeText = safeText.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" class="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer">$1</a>');
 
-    return <span dangerouslySetInnerHTML={{ __html: text }} />;
+    return <span dangerouslySetInnerHTML={{ __html: safeText }} />;
   };
 
 
@@ -1132,7 +1154,7 @@ const TUITaskManager = () => {
     return colors[priority] || 'text-gray-500';
   };
 
-  const handleSync = async () => {
+  const handleSync = async (direction: SyncDirection = syncDirection) => {
     if (!todoistToken.trim()) {
       setSyncResult({
         success: false,
@@ -1166,7 +1188,7 @@ const TUITaskManager = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          direction: syncDirection,
+          direction,
           entityType: 'all'
         }),
       });
@@ -1205,18 +1227,21 @@ const TUITaskManager = () => {
   };
 
   const handleSyncFromTodoist = async () => {
-    setSyncDirection('FROM_TODOIST');
-    await handleSync();
+    const direction: SyncDirection = 'FROM_TODOIST';
+    setSyncDirection(direction);
+    await handleSync(direction);
   };
 
   const handleSyncToTodoist = async () => {
-    setSyncDirection('TO_TODOIST');
-    await handleSync();
+    const direction: SyncDirection = 'TO_TODOIST';
+    setSyncDirection(direction);
+    await handleSync(direction);
   };
 
   const handleBidirectionalSync = async () => {
-    setSyncDirection('BIDIRECTIONAL');
-    await handleSync();
+    const direction: SyncDirection = 'BIDIRECTIONAL';
+    setSyncDirection(direction);
+    await handleSync(direction);
   };
 
   const handleDeleteTask = async (task: Task) => {
@@ -1240,8 +1265,22 @@ const TUITaskManager = () => {
   const handleDeleteProject = async (project: Project) => {
     if (projects.length <= 1) return; // Don't delete the last project
 
-    setProjects(projects.filter((_, idx) => idx !== selectedProjectIdx));
-    setSelectedProjectIdx(Math.max(0, selectedProjectIdx - 1));
+    try {
+      const response = await fetch(`http://localhost:3001/api/projects/${project.id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error((errorData as { error?: string }).error || 'Failed to delete project');
+      }
+
+      setProjects(projects.filter((_, idx) => idx !== selectedProjectIdx));
+      setSelectedProjectIdx(Math.max(0, selectedProjectIdx - 1));
+      setTasks(tasks.filter(t => t.projectId !== project.id));
+    } catch (error) {
+      console.error('Failed to delete project:', error);
+    }
   };
 
   if (loading) {
@@ -1719,6 +1758,7 @@ const TUITaskManager = () => {
               setTasks={setTasks}
               selectedProject={selectedProject}
               selectedProjectIdx={selectedProjectIdx}
+              selectedTaskIdx={selectedTaskIdx}
               setSelectedProjectIdx={setSelectedProjectIdx}
               setSelectedTaskIdx={setSelectedTaskIdx}
               activePane={activePane}
