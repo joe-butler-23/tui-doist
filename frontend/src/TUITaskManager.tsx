@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   DndContext,
   closestCenter,
@@ -208,14 +208,16 @@ const OutlinerView: React.FC<{
     });
   };
 
-  // Group tasks by project for outliner view
-  const projectTasks = tasks.reduce((acc, task) => {
-    if (!acc[task.projectId]) {
-      acc[task.projectId] = [];
+    return grouped;
+  }, [tasks]);
+
+  const taskProjectLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const task of tasks) {
+      lookup.set(task.id, task.projectId);
     }
-    acc[task.projectId].push(task);
-    return acc;
-  }, {} as Record<string, Task[]>);
+    return lookup;
+  }, [tasks]);
 
   // Get filtered tasks for current project
   // Simple date hierarchy for demo (in real implementation, fetch from API)
@@ -451,6 +453,7 @@ const OutlinerView: React.FC<{
               </div>
             );
           })}
+          </DndContext>
 
           {/* Date Hierarchy Section - Clean simple design */}
           <div className="mb-1">
