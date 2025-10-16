@@ -1,4 +1,4 @@
-import { TodoistApi } from '@doist/todoist-api-typescript';
+import { TodoistApi, type AddTaskArgs, type UpdateTaskArgs } from '@doist/todoist-api-typescript';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -266,17 +266,22 @@ export class TodoistService {
             continue;
           }
 
-          const taskData = {
-            content: task.text,
-            projectId: task.project.todoistId,
-            description: task.notes || '',
-            priority: this.mapToTodoistPriority(task.priority),
-            dueDate: task.dueDate ? task.dueDate.toISOString().split('T')[0] : undefined,
-          };
-
           if (task.todoistId) {
             // Update existing task
-            await this.api.updateTask(task.todoistId, taskData);
+            const updateData: UpdateTaskArgs = task.dueDate
+              ? {
+                  content: task.text,
+                  description: task.notes || '',
+                  priority: this.mapToTodoistPriority(task.priority),
+                  dueDate: task.dueDate.toISOString().split('T')[0],
+                }
+              : {
+                  content: task.text,
+                  description: task.notes || '',
+                  priority: this.mapToTodoistPriority(task.priority),
+                };
+
+            await this.api.updateTask(task.todoistId, updateData);
 
             // Handle completion status separately
             if (task.completed) {
@@ -294,7 +299,22 @@ export class TodoistService {
             });
           } else {
             // Create new task
-            const todoistTask = await this.api.addTask(taskData);
+            const addData: AddTaskArgs = task.dueDate
+              ? {
+                  content: task.text,
+                  projectId: task.project.todoistId,
+                  description: task.notes || '',
+                  priority: this.mapToTodoistPriority(task.priority),
+                  dueDate: task.dueDate.toISOString().split('T')[0],
+                }
+              : {
+                  content: task.text,
+                  projectId: task.project.todoistId,
+                  description: task.notes || '',
+                  priority: this.mapToTodoistPriority(task.priority),
+                };
+
+            const todoistTask = await this.api.addTask(addData);
 
             await prisma.task.update({
               where: { id: task.id },
