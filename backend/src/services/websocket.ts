@@ -5,47 +5,51 @@ export class SyncWebSocketService {
   private wss: WebSocket.Server;
   private todoistService: TodoistService;
   private connectedClients: Set<WebSocket> = new Set();
+  private connectionHandler: (ws: WebSocket) => void;
 
   constructor(wss: WebSocket.Server, todoistToken: string) {
     this.wss = wss;
     this.todoistService = new TodoistService(todoistToken);
+    this.connectionHandler = this.handleConnection.bind(this);
 
     this.setupWebSocketServer();
   }
 
   private setupWebSocketServer() {
-    this.wss.on('connection', (ws: WebSocket) => {
-      console.log('Client connected to sync WebSocket');
-      this.connectedClients.add(ws);
+    this.wss.on('connection', this.connectionHandler);
+  }
 
-      ws.on('message', async (message: WebSocket.Data) => {
-        try {
-          const data = JSON.parse(message.toString());
-          await this.handleMessage(ws, data);
-        } catch (error) {
-          console.error('WebSocket message error:', error);
-          this.sendToClient(ws, {
-            type: 'error',
-            message: 'Invalid message format'
-          });
-        }
-      });
+  private handleConnection(ws: WebSocket) {
+    console.log('Client connected to sync WebSocket');
+    this.connectedClients.add(ws);
 
-      ws.on('close', () => {
-        console.log('Client disconnected from sync WebSocket');
-        this.connectedClients.delete(ws);
-      });
+    ws.on('message', async (message: WebSocket.Data) => {
+      try {
+        const data = JSON.parse(message.toString());
+        await this.handleMessage(ws, data);
+      } catch (error) {
+        console.error('WebSocket message error:', error);
+        this.sendToClient(ws, {
+          type: 'error',
+          message: 'Invalid message format'
+        });
+      }
+    });
 
-      ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-        this.connectedClients.delete(ws);
-      });
+    ws.on('close', () => {
+      console.log('Client disconnected from sync WebSocket');
+      this.connectedClients.delete(ws);
+    });
 
-      // Send initial connection confirmation
-      this.sendToClient(ws, {
-        type: 'connected',
-        message: 'Connected to real-time sync'
-      });
+    ws.on('error', (error) => {
+      console.error('WebSocket error:', error);
+      this.connectedClients.delete(ws);
+    });
+
+    // Send initial connection confirmation
+    this.sendToClient(ws, {
+      type: 'connected',
+      message: 'Connected to real-time sync'
     });
   }
 
@@ -170,5 +174,17 @@ export class SyncWebSocketService {
 
   public getConnectedClientsCount(): number {
     return this.connectedClients.size;
+  }
+
+  public dispose() {
+    this.connectedClients.forEach((ws) => {
+      try {
+        ws.close();
+      } catch (error) {
+        console.error('Error closing WebSocket client:', error);
+      }
+    });
+    this.connectedClients.clear();
+    this.wss.removeListener('connection', this.connectionHandler);
   }
 }

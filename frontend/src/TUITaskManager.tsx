@@ -19,6 +19,8 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
+type SyncDirection = 'TO_TODOIST' | 'FROM_TODOIST' | 'BIDIRECTIONAL';
+
 interface Project {
   id: string;
   name: string;
@@ -159,10 +161,16 @@ const OutlinerView: React.FC<{
       if (oldIndex !== -1 && newIndex !== -1) {
         // Update local state immediately for smooth UX
         const reorderedTasks = arrayMove(filteredTasks, oldIndex, newIndex);
+        const reorderedTaskMap = new Map(reorderedTasks.map(task => [task.id, task]));
+
         // Update the global tasks array
-        const newTasks = [...tasks];
-        const projectTasks = newTasks.filter(t => t.projectId === selectedProject?.id);
-        projectTasks.splice(0, projectTasks.length, ...reorderedTasks);
+        const newTasks = tasks.map((task) => {
+          if (task.projectId !== selectedProject?.id) {
+            return task;
+          }
+
+          return reorderedTaskMap.get(task.id) ?? task;
+        });
         setTasks(newTasks);
       }
     }
@@ -528,7 +536,7 @@ const TUITaskManager = () => {
   const [todoistToken, setTodoistToken] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
-  const [syncDirection, setSyncDirection] = useState('FROM_TODOIST');
+  const [syncDirection, setSyncDirection] = useState<SyncDirection>('FROM_TODOIST');
   const [realTimeSync, setRealTimeSync] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [viewMode, setViewMode] = useState<'classic' | 'outliner'>('classic');
@@ -745,19 +753,29 @@ const TUITaskManager = () => {
   };
 
   // Format inline text (**bold**, *italics*)
+  const escapeHtml = (unsafeText: string) =>
+    unsafeText
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   const formatInlineText = (text: string) => {
     if (!text) return text;
 
+    let safeText = escapeHtml(text);
+
     // Handle **bold**
-    text = text.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-gray-200">$1</strong>');
+    safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-gray-200">$1</strong>');
 
     // Handle *italics*
-    text = text.replace(/\*(.*?)\*/g, '<em class="italic text-gray-300">$1</em>');
+    safeText = safeText.replace(/\*(.*?)\*/g, '<em class="italic text-gray-300">$1</em>');
 
     // Handle URLs
-    text = text.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" class="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer">$1</a>');
+    safeText = safeText.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" class="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer">$1</a>');
 
-    return <span dangerouslySetInnerHTML={{ __html: text }} />;
+    return <span dangerouslySetInnerHTML={{ __html: safeText }} />;
   };
 
 
@@ -1132,7 +1150,7 @@ const TUITaskManager = () => {
     return colors[priority] || 'text-gray-500';
   };
 
-  const handleSync = async () => {
+  const handleSync = async (direction: SyncDirection = syncDirection) => {
     if (!todoistToken.trim()) {
       setSyncResult({
         success: false,
@@ -1166,7 +1184,7 @@ const TUITaskManager = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          direction: syncDirection,
+          direction,
           entityType: 'all'
         }),
       });
@@ -1205,18 +1223,21 @@ const TUITaskManager = () => {
   };
 
   const handleSyncFromTodoist = async () => {
-    setSyncDirection('FROM_TODOIST');
-    await handleSync();
+    const direction: SyncDirection = 'FROM_TODOIST';
+    setSyncDirection(direction);
+    await handleSync(direction);
   };
 
   const handleSyncToTodoist = async () => {
-    setSyncDirection('TO_TODOIST');
-    await handleSync();
+    const direction: SyncDirection = 'TO_TODOIST';
+    setSyncDirection(direction);
+    await handleSync(direction);
   };
 
   const handleBidirectionalSync = async () => {
-    setSyncDirection('BIDIRECTIONAL');
-    await handleSync();
+    const direction: SyncDirection = 'BIDIRECTIONAL';
+    setSyncDirection(direction);
+    await handleSync(direction);
   };
 
   const handleDeleteTask = async (task: Task) => {
@@ -1240,8 +1261,22 @@ const TUITaskManager = () => {
   const handleDeleteProject = async (project: Project) => {
     if (projects.length <= 1) return; // Don't delete the last project
 
-    setProjects(projects.filter((_, idx) => idx !== selectedProjectIdx));
-    setSelectedProjectIdx(Math.max(0, selectedProjectIdx - 1));
+    try {
+      const response = await fetch(`http://localhost:3001/api/projects/${project.id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error((errorData as { error?: string }).error || 'Failed to delete project');
+      }
+
+      setProjects(projects.filter((_, idx) => idx !== selectedProjectIdx));
+      setSelectedProjectIdx(Math.max(0, selectedProjectIdx - 1));
+      setTasks(tasks.filter(t => t.projectId !== project.id));
+    } catch (error) {
+      console.error('Failed to delete project:', error);
+    }
   };
 
   if (loading) {

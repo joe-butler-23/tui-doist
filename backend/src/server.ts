@@ -36,14 +36,21 @@ server.register(cors, {
 
 // Set up WebSocket server for real-time sync
 const wss = new WebSocket.Server({ server: (server as any).server });
-let syncWebSocketService: SyncWebSocketService;
+let syncWebSocketService: SyncWebSocketService | null = null;
 
 // Make WebSocket service globally accessible for routes
 (global as any).syncWebSocketService = null;
 
 // Initialize WebSocket service after environment variables are loaded
-const initializeWebSocket = () => {
-  const todoistToken = process.env.TODOIST_API_TOKEN;
+const initializeWebSocket = (token?: string) => {
+  const todoistToken = token || process.env.TODOIST_API_TOKEN;
+
+  if (syncWebSocketService) {
+    syncWebSocketService.dispose();
+    syncWebSocketService = null;
+    (global as any).syncWebSocketService = null;
+  }
+
   if (todoistToken && todoistToken !== 'your_todoist_api_token_here') {
     syncWebSocketService = new SyncWebSocketService(wss, todoistToken);
     (global as any).syncWebSocketService = syncWebSocketService;
@@ -54,7 +61,7 @@ const initializeWebSocket = () => {
 };
 
 // Initialize WebSocket after a short delay to ensure env vars are loaded
-setTimeout(initializeWebSocket, 1000);
+setTimeout(() => initializeWebSocket(), 1000);
 
 // Root endpoint with API info
 server.get('/', async () => {
@@ -122,6 +129,8 @@ server.post('/api/config/todoist-token', async (request, reply) => {
     // In a real app, you'd save this securely (encrypted in database)
     // For now, we'll save it to the .env file or use a simple store
     process.env.TODOIST_API_TOKEN = token;
+
+    initializeWebSocket(token);
 
     return { success: true, message: 'Token saved successfully' };
   } catch (error) {
