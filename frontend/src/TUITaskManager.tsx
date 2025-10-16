@@ -155,8 +155,25 @@ const OutlinerView: React.FC<{
   const createProjectDragEndHandler = (projectId: string) => (event: DragEndEvent) => {
     const { active, over } = event;
 
-    if (!over || active.id === over.id) {
-      return;
+    if (over && active.id !== over.id) {
+      const oldIndex = filteredTasks.findIndex((task) => task.id === active.id);
+      const newIndex = filteredTasks.findIndex((task) => task.id === over.id);
+
+      if (oldIndex !== -1 && newIndex !== -1) {
+        // Update local state immediately for smooth UX
+        const reorderedTasks = arrayMove(filteredTasks, oldIndex, newIndex);
+        const reorderedTaskMap = new Map(reorderedTasks.map(task => [task.id, task]));
+
+        // Update the global tasks array
+        const newTasks = tasks.map((task) => {
+          if (task.projectId !== selectedProject?.id) {
+            return task;
+          }
+
+          return reorderedTaskMap.get(task.id) ?? task;
+        });
+        setTasks(newTasks);
+      }
     }
 
     setTasks(prevTasks => {
