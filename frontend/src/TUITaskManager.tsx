@@ -155,30 +155,24 @@ const OutlinerView: React.FC<{
   const createProjectDragEndHandler = (projectId: string, projectTaskList: Task[]) => (event: DragEndEvent) => {
     const { active, over } = event;
 
-    if (!over || active.id === over.id) {
-      return;
-    }
+    if (over && active.id !== over.id) {
+      const oldIndex = filteredTasks.findIndex((task) => task.id === active.id);
+      const newIndex = filteredTasks.findIndex((task) => task.id === over.id);
 
-    const oldIndex = projectTaskList.findIndex(task => task.id === active.id);
-    const newIndex = projectTaskList.findIndex(task => task.id === over.id);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        // Update local state immediately for smooth UX
+        const reorderedTasks = arrayMove(filteredTasks, oldIndex, newIndex);
+        const reorderedTaskMap = new Map(reorderedTasks.map(task => [task.id, task]));
 
-    if (oldIndex === -1 || newIndex === -1) {
-      return;
-    }
+        // Update the global tasks array
+        const newTasks = tasks.map((task) => {
+          if (task.projectId !== selectedProject?.id) {
+            return task;
+          }
 
-    const reorderedTasks = arrayMove(projectTaskList, oldIndex, newIndex);
-    const reorderedTaskMap = new Map(reorderedTasks.map(task => [task.id, task]));
-
-    const updatedTasks = tasks.map(task =>
-      task.projectId === projectId ? (reorderedTaskMap.get(task.id) ?? task) : task
-    );
-
-    setTasks(updatedTasks);
-
-    if (selectedProject?.id === projectId && selectedTask) {
-      const newSelectedIndex = reorderedTasks.findIndex(task => task.id === selectedTask.id);
-      if (newSelectedIndex !== -1) {
-        setSelectedTaskIdx(newSelectedIndex);
+          return reorderedTaskMap.get(task.id) ?? task;
+        });
+        setTasks(newTasks);
       }
     }
   };
